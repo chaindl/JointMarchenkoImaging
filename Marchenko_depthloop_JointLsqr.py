@@ -16,7 +16,7 @@ from scipy.special import hankel2
 from pylops.basicoperators import Restriction
 from pylops.waveeqprocessing import MDC, MDD
     
-def Marchenko_depthloop(zinvs,zendvs):
+def Marchenko_depthloop_JointLsqr(zinvs,zendvs):
     #%%
     toff = 0.045        # direct arrival time shift
     nfmax = 550         # max frequency for MDC (#samples)
