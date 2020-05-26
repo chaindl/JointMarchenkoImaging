@@ -15,12 +15,13 @@ from scipy.special import hankel2
 from pylops.basicoperators        import Restriction
 from pylops.waveeqprocessing      import MDC, MDD
 from pylops.signalprocessing      import Radon2D, Sliding2D
-from pylops.basicoperators        import Diagonal, BlockDiag, VStack, HStack, Zero
-    
-import Operators as OP
+from pylops.basicoperators        import Diagonal, BlockDiag, VStack, HStack, Zero, Transpose, Identity
+from pylops.optimization.sparsity import SPGL1, FISTA
 
+#import Operators as OP
 import multiprocessing as MP
-    
+
+
 def Marchenko_depthloop_JointRadon(zinvs, zendvs, nproc):
     #%%
     
@@ -125,10 +126,9 @@ def Marchenko_depthloop_JointRadon(zinvs, zendvs, nproc):
     
     del wav, R_1, R_2, Rtwosided_1, Rtwosided_2, R1twosided_1, R1twosided_2, Rtwosided_fft_1, Rtwosided_fft_2, R1twosided_fft_1, R1twosided_fft_2
     
-    # %% configuring radon transform
-    
-    nwin=25
-    nwins=12
+    # Radon transform
+    nwin=35
+    nwins=7
     nover=10
     npx=101
     pxmax = 1e-3
@@ -137,45 +137,38 @@ def Marchenko_depthloop_JointRadon(zinvs, zendvs, nproc):
     t2=np.concatenate([-t[::-1], t[1:]])
     nt2=t2.shape[0]
     
-    dimsd = (nr, nt2) 
+    dimsd = (nr, nt2)
     dimss = (nwins*npx, dimsd[1])
     
     # tranpose operator
-    Top = OP.Transpose((nt2, nr), axes=(1, 0), dtype=np.float64)
+    #Top = Transpose((nt2, nr), axes=(1, 0), dtype=np.float64)
     
     # sliding window radon with overlap
-    RadOp = Radon2D(t2, np.linspace(-ds*nwin//2, ds*nwin//2, nwin), px, centeredh=True,
+    RadOp = Radon2D(t2, np.linspace(-ds*nwin//2, ds*nwin//2, nwin), px, centeredh=True, 
                     kind='linear', engine='numba')
-    Slidop = Sliding2D(RadOp, dimss, dimsd, nwin, nover, tapertype='cosine', design=True)
-    Sparseop = BlockDiag([Top.H*Slidop, Top.H*Slidop, Top.H*Slidop, Top.H*Slidop, Top.H*Slidop, Top.H*Slidop])
+    Slidop = Sliding2D(RadOp, dimss, dimsd, nwin, nover, tapertype='cosine', design=False)
+    #Sparseop = BlockDiag([Top.H*Slidop, Top.H*Slidop, Top.H*Slidop, Top.H*Slidop, Top.H*Slidop, Top.H*Slidop])
+    Sparseop = BlockDiag([Slidop, Slidop, Slidop, Slidop, Slidop, Slidop])
     
-    del nwin, nwins, nover, npx, pxmax, px, t2, nt2, dimsd, dimss, Top, RadOp, Slidop
+    #del nwin, nwins, nover, npx, pxmax, px, t2, nt2, dimsd, dimss, Top, RadOp, Slidop
     # %% the loop
     
-    
+    trav_eik = np.loadtxt(path0 + 'trav.dat', delimiter=',')
+    trav_eik = np.reshape(trav_eik,(nz,ns,nx))
+   
     print('Entering loop...')
     z_steps = np.arange(zinvs, zendvs + 1, dvsz * nproc)
-    nblocks = z_steps.shape[0]
-    iblock = 0
     for z_step in z_steps:
-        
-        iblock = iblock+1
-        processes = []
         for i in range(nproc):
             z_current = z_step + dvsz * i
             if (z_current <= zendvs):
-                p = MP.Process(target=focusing_wrapper, args=(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, Restrop2, Sparseop, vsx, vsz, x, z, z_current, nt, dt, nfft, nr, ds, dvsx))
-                processes.append(p)
-                p.start()
+                FUP1, FDOWN1, PUP1, PDOWN1, PUP2, PDOWN2, redatumed1, redatumed2 = focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, Restrop2, Sparseop, vsx, vsz, x, z, z_current, nt, dt, nfft, nr, ds, dvsx, trav_eik)
+              
         
-        for p in processes:
-            p.join()
-            
-        s = 'Block ' + str(z_step) + ' - ' + str(z_current) + ' done. ' + str(100 * iblock / nblocks) + '%'
-        print(s)
-            
+    return FUP1, FDOWN1, PUP1, PDOWN1, PUP2, PDOWN2, redatumed1, redatumed2
+     
     
-def focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, Restrop2, Sparseop, vsx, vsz, x, z, z_current, nt, dt, nfft, nr, ds, dvsx):
+def focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, Restrop2, Sparseop, vsx, vsz, x, z, z_current, nt, dt, nfft, nr, ds, dvsx, trav_eik):
     
     from scipy.signal import filtfilt
     
@@ -183,33 +176,33 @@ def focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, 
     nava2=iava2.shape[0]
     nvsx = vsx.shape[0]
     
+    FUP1=np.zeros(shape=(nr,nvsx,nt*2-1))
+    FDOWN1=np.zeros(shape=(nr,nvsx,nt*2-1))
     PUP1=np.zeros(shape=(nava1,nvsx,nt))
     PDOWN1=np.zeros(shape=(nava1,nvsx,nt))
     PUP2=np.zeros(shape=(nava2,nvsx,nt))
     PDOWN2=np.zeros(shape=(nava2,nvsx,nt))
-    
-    
-    
+         
     for ix in range(nvsx):
         #%%
         s = '####### Point ' + str(ix+1) + ' of ' + str(nvsx) + ' of current line (z = ' + str(z_current) + ', x = ' + str(vsx[ix]) + ')'
         print(s)
-        direct = np.loadtxt('datasets_new/Traveltimes/trav_x' + str(vsx[ix]) + '_z' + str(z[MF.find_closest(z_current,z)]) + '.dat', delimiter=',')
+        #direct = np.loadtxt('datasets_new/Traveltimes/trav_x' + str(vsx[ix]) + '_z' + str(z[MF.find_closest(z_current,z)]) + '.dat', delimiter=',')
+        direct = trav_eik[MF.find_closest(z_current,z),:,MF.find_closest(vsx[ix],x)]
+
         f = 2 * np.pi * np.arange(nfft) / (dt * nfft)
         g0VS = np.zeros((nfft, nr), dtype=np.complex128)
         for it in range(len(W)):
-            g0VS[it] = W[it] * 1j * f[it] * (-1j) * hankel2(0, f[it] * direct + 1e-10) / 4
+            g0VS[it] = W[it] * f[it] * hankel2(0, f[it] * direct + 1e-10) / 4
         g0VS = np.fft.irfft(g0VS, nfft, axis=0) / dt
         g0VS = np.real(g0VS[:nt])
         
-        #%%
-        
+        # window
         nsmooth=10
         nr=direct.shape[0]
         nsava1=iava1.shape[0]
         nsava2=iava2.shape[0]
         
-        # window
         directVS_off = direct - toff
         idirectVS_off = np.round(directVS_off/dt).astype(np.int)
         w = np.zeros((nr, nt))
@@ -240,17 +233,18 @@ def focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, 
                        HStack([-1*WSop1*R1op1, Restrop1])])*BlockDiag([Wop, Wop])
         Mop2 = VStack([HStack([Restrop2, -1*WSop2*Rop2]),
                        HStack([-1*WSop2*R1op2, Restrop2])])*BlockDiag([Wop, Wop])
-        Mop = VStack([HStack([Mop1, Mop1, Zero(Mop1.shape[0],Mop1.shape[1])]),
-                      HStack([Mop2, Zero(Mop2.shape[0],Mop2.shape[1]), Mop2])])
-        
-        Mop_radon =  Mop * Sparseop
+        Mop = VStack([HStack([Identity(2*(2*nt-1)*nr), Identity(2*(2*nt-1)*nr), Zero(2*(2*nt-1)*nr)]),
+                      HStack([Identity(2*(2*nt-1)*nr), Zero(2*(2*nt-1)*nr), Identity(2*(2*nt-1)*nr)])])
+        Mop = BlockDiag([Mop1, Mop2]) * Mop
+
+        Mop_radon = Mop * Sparseop
         
         Gop1 = VStack([HStack([Restrop1, -1*Rop1]),
                        HStack([-1*R1op1, Restrop1])])
         Gop2 = VStack([HStack([Restrop2, -1*Rop2]),
                        HStack([-1*R1op2, Restrop2])])
         
-        #%%
+        # data
         d1 = WSop1*Rop1*fd_plus.flatten()
         d1 = np.concatenate((d1.reshape(nsava1, 2*nt-1), np.zeros((nsava1, 2*nt-1))))
         d2 = WSop2*Rop2*fd_plus.flatten()
@@ -258,7 +252,10 @@ def focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, 
         
         d = np.concatenate((d1, d2))
         
-        comb_f = OP.SPGL1(Mop_radon, d.flatten(), sigma=1e-1, iter_lim=10, verbosity=0)[0]
+        # inversion
+        #comb_f = SPGL1(Mop_radon, d.flatten(), sigma=1e-1, iter_lim=20, verbosity=0)[0]
+        comb_f = FISTA(Mop_radon, d.flatten(), eps=5e-2, niter=50, eigsiter=4, eigstol=1e-3, 
+                       tol=1e-2, returninfo=False, show=True)[0]
         comb_f = Sparseop * comb_f
         comb_f = comb_f.reshape(6*nr, (2*nt-1))
         comb_f_tot = comb_f + np.concatenate((np.zeros((nr, 2*nt-1)),
@@ -272,24 +269,26 @@ def focusing_wrapper(toff, W, iava1, iava2, Rop1, Rop2, R1op1, R1op2, Restrop1, 
         g_2 = BlockDiag([WiSop2,WiSop2])*Gop2*f1_2.flatten()
         g_2 = g_2.reshape(2*nsava2, (2*nt-1))
         
-        #f1_1_minus, f1_1_plus =  f1_1[:nr], f1_1[nr:]
-        #f1_2_minus, f1_2_plus =  f1_2[:nr], f1_2[nr:]
+        f1_1_minus, f1_1_plus =  f1_1[:nr], f1_1[nr:]
+        f1_2_minus, f1_2_plus =  f1_2[:nr], f1_2[nr:]
         g_1_minus, g_1_plus =  -g_1[:nsava1], np.fliplr(g_1[nsava1:])
         g_2_minus, g_2_plus =  -g_2[:nsava2], np.fliplr(g_2[nsava2:])
         
+        FUP1[:,ix,:]=f1_1_minus 
+        FDOWN1[:,ix,:]=f1_1_plus
         PUP1[:,ix,:]=g_1_minus[:,nt-1:]
         PDOWN1[:,ix,:]=g_1_plus[:,nt-1:]
         PUP2[:,ix,:]=g_2_minus[:,nt-1:]
         PDOWN2[:,ix,:]=g_2_plus[:,nt-1:]
-        
-        #%%
+
     jt=2
     redatumed1 = MDD(PDOWN1[:,:,::jt], PUP1[:,:,::jt], dt = jt*dt, dr = dvsx, twosided=True, adjoint=False, psf=False, dtype='complex64', dottest=False, **dict(iter_lim=20, show=0))
     redatumed2 = MDD(PDOWN2[:,:,::jt], PUP2[:,:,::jt], dt = jt*dt, dr = dvsx, twosided=True, adjoint=False, psf=False, dtype='complex64', dottest=False, **dict(iter_lim=20, show=0))
     
-    np.savetxt('datasets_radon/Line1_' + str(z_current) + '.dat', np.diag(redatumed1[:,:,(nt+1)/jt-1]), delimiter=',')
-    np.savetxt('datasets_radon/Line2_' + str(z_current) + '.dat', np.diag(redatumed2[:,:,(nt+1)/jt-1]), delimiter=',')
-    
+    #np.savetxt('datasets_radon/Line1_' + str(z_current) + '.dat', np.diag(redatumed1[:,:,(nt+1)/jt-1]), delimiter=',')
+    #np.savetxt('datasets_radon/Line2_' + str(z_current) + '.dat', np.diag(redatumed2[:,:,(nt+1)/jt-1]), delimiter=',')
+    return FUP1, FDOWN1, PUP1, PDOWN1, PUP2, PDOWN2, redatumed1, redatumed2
+
 
 if __name__ == "__main__":
     zinvs = int(sys.argv[1])
