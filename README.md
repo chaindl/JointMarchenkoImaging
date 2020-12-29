@@ -11,11 +11,11 @@ Input Files:
   * wav.dat:         wavelet
   * trav.dat:        traveltimes (used by LSQR functions)¹
   * vel_sm.dat:      smoothed velocity model used for angle gathers
-  * Traveltimes/..:  cut up traveltime data (used by Radon functions)¹
+  * Traveltimes/..:  cut up traveltime data (used by Radon functions)²
   * R/dat1..:        baseline synthetics²
   * R/dat2..:        monitor synthetics²
 
-1: Due to the file size the file is only available on request.
+1: Due to the file size the file is only available on request.  
 2: One example file is provided and the entire dataset is available upon request.
 
 Outputs:
