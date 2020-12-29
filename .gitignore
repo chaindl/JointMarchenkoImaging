@@ -1,0 +1,8 @@
+datasets/R/*
+!datasets/R/dat1_0.dat
+!datasets/R/dat2_0.dat
+
+datasets/Traveltimes/*
+!datasets/Traveltimes/trav_x600_z900.dat
+
+datasets/trav.dat
